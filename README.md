@@ -77,6 +77,4 @@ Crafted with ❤️ by **Utkarsh Kulshrestha**
 
 - **GitHub**: [@utkarsh05kul](https://github.com/utkarsh05kul)
 - **Repository**: [LensAnywhere-Desktop](https://github.com/utkarsh05kul/LensAnywhere-Desktop)
----
 
-## 🛠️ How It Works
