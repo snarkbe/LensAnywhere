@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/utkarsh05kul/LensAnywhere-Desktop/releases"><img src="https://img.shields.io/github/v/release/utkarsh05kul/LensAnywhere-Desktop?style=flat-square&color=2563EB" alt="Latest Release"></a>
+  <a href="https://github.com/utkarsh05kul/LensAnywhere-Desktop/releases"><img src="https://img.shields.io/badge/release-v1.0.0-2563EB?style=flat-square" alt="Latest Release"></a>
   <a href="https://github.com/utkarsh05kul/LensAnywhere-Desktop/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-38BDF8?style=flat-square" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/Platform-Windows-0284C7?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square" alt="Python Version">
