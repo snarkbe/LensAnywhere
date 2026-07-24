@@ -46,15 +46,15 @@ If you just want to use the app without running Python scripts:
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌────────────────────────┐     ┌─────────────────────┐
-│ Press Hotkey    │ ──> │ Capture Region   │ ──> │ Serve Image via RAM    │ ──> │ Open Google Lens in │
-│ (Ctrl+Shift+Alt+S)│   │ Screen Overlay   │     │ Ephemeral Cloudflare   │     │ Default Web Browser │
+│ Press Hotkey    │ ──> │ Capture Region   │ ──> │ Upload Image Directly  │ ──> │ Open Google Lens in │
+│ (Ctrl+Shift+Alt+S)│   │ Screen Overlay   │     │ to Google Lens (HTTPS) │     │ Default Web Browser │
 └─────────────────┘     └──────────────────┘     └────────────────────────┘     └─────────────────────┘
 ```
 
 1. **Trigger**: Activate the capture overlay using your custom global hotkey.
 2. **Select**: Draw a crop box over the region you want to search.
-3. **Stream**: The captured region is held temporarily in RAM and served locally via an ephemeral Cloudflare Tunnel (`trycloudflare.com`).
-4. **Search**: LensAnywhere generates a direct Google Lens URL (`https://lens.google.com/uploadbyurl?url=...`) and opens it in your default web browser.
+3. **Upload**: The captured region is held in RAM and POSTed directly to Google Lens (`https://lens.google.com/upload`) over a single outbound HTTPS request — nothing is ever served or exposed publicly.
+4. **Search**: LensAnywhere follows the redirect Google Lens returns and opens the resulting search page in your default web browser.
 
 ---
 
@@ -62,32 +62,34 @@ If you just want to use the app without running Python scripts:
 
 - **UI Framework**: [PySide6](https://pypi.org/project/PySide6/) (Qt6 for Python)
 - **Language**: Python 3.10+
-- **Tunneling**: [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (`cloudflared`)
 - **System Hooks**: Native Windows Global Hotkeys & System Tray Integration
 
 ---
 
 ## 🛡️ Security & Antivirus False Positives
 
-LensAnywhere ships a background HTTP tunnel (Cloudflare `cloudflared`) plus a
-silently-launched helper process, a pattern antivirus/SmartScreen heuristics
-often flag. This project takes the following steps to reduce both the real
-exposure and the false-positive rate:
+Earlier versions shipped a background Cloudflare Tunnel (`cloudflared`) to
+expose the capture at a public URL that Google Lens's servers would fetch —
+a background subprocess plus a persistent outbound tunnel is exactly the
+pattern antivirus/SmartScreen heuristics flag. That whole mechanism has been
+removed: captures are now POSTed directly to `https://lens.google.com/upload`
+over a single outbound HTTPS request, the same way a browser upload works.
+There is no tunnel, no bundled `cloudflared.exe`, no locally-listening HTTP
+server, and no public exposure window at all.
 
-- **Random per-capture URL**: each screenshot is served behind a fresh
-  `secrets.token_urlsafe(16)` token instead of a fixed, guessable
-  `/image.png` path, so nothing can be found by scanning/guessing the tunnel
-  URL while it's briefly up.
-- **On-demand tunnel**: `cloudflared` is no longer started at app launch and
-  kept open for the whole session. It is spun up only when a capture is
-  actually made, and automatically torn down ~45s later, minimizing both the
-  exposure window and the "persistent outbound connection" pattern AVs
-  dislike.
-- **Visible tunnel lifecycle**: opening/closing the tunnel now raises a
-  system tray notification instead of running fully silently in the
-  background.
-- **Build**: release binaries are built one-folder (`--onedir`) with UPX
-  compression disabled (`--noupx`, see `LensAnywhere.spec`) rather than a
+This removes the main source of AV false positives outright, but a couple of
+things are worth knowing about the new upload path:
+
+- **GDPR consent cookie**: anonymous requests to Google from an EU/EEA IP are
+  otherwise served a cookie-consent interstitial instead of the expected
+  redirect. The upload request sends the long-standing `CONSENT=YES+` cookie
+  used by Google-scraping tools to skip that interstitial.
+- **Unofficial endpoint**: `lens.google.com/upload` isn't a documented public
+  API — it's the same endpoint the Lens website itself uses for file
+  uploads, reverse-engineered like the previous `uploadbyurl` approach. It
+  could change without notice.
+- **Build**: release binaries are still built one-folder (`--onedir`) with
+  UPX compression disabled (`--noupx`, see `LensAnywhere.spec`) rather than a
   single UPX-packed `--onefile` executable, which lowers the entropy/packing
   signature that static AV engines key on.
 

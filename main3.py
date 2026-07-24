@@ -1040,8 +1040,7 @@ class Overlay(QWidget):
         self.tray_icon = tray_icon
 
     def trigger_capture(self):
-        """Opens the capture overlay. The Cloudflare tunnel is started on demand,
-        only once a region is actually captured, and is torn down shortly after."""
+        """Opens the capture overlay."""
         self.showFullScreen()
 
     def show_settings(self):
@@ -1175,10 +1174,10 @@ def create_tray_icon_pixmap():
     return pm
 
 
-class TunnelNotifier(QWidget):
-    """Marshals tunnel status updates from the background capture thread onto the
-    Qt main thread so they can be surfaced as a visible tray notification instead
-    of the tunnel opening/closing silently in the background."""
+class LensStatusNotifier(QWidget):
+    """Marshals Google Lens upload status updates from the background capture
+    thread onto the Qt main thread so they can be surfaced as a visible tray
+    notification instead of running silently in the background."""
 
     status_changed = Signal(str)
 
@@ -1219,11 +1218,11 @@ if __name__ == "__main__":
     tray_icon.setToolTip("LensAnywhere (Ready)")
     overlay.set_tray_icon(tray_icon)
 
-    # The Cloudflare tunnel is now created on demand per capture (see
-    # lens_logic_new.py); wire its lifecycle to a visible tray notification
-    # rather than letting it run silently in the background.
-    tunnel_notifier = TunnelNotifier(tray_icon)
-    set_status_callback(tunnel_notifier.notify)
+    # Captures are uploaded directly to Google Lens (see lens_logic_new.py);
+    # wire that status to a visible tray notification rather than letting it
+    # run silently in the background.
+    lens_notifier = LensStatusNotifier(tray_icon)
+    set_status_callback(lens_notifier.notify)
 
     tray_menu = QMenu()
 

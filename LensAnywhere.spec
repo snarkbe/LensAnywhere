@@ -29,12 +29,6 @@ datas = [
     ("settings.svg", "."),
 ]
 
-# cloudflared.exe must be placed next to this spec file before building; it
-# is bundled alongside the app rather than embedded in the frozen binary.
-import os
-if os.path.exists("cloudflared.exe"):
-    datas.append(("cloudflared.exe", "."))
-
 a = Analysis(
     ["main3.py"],
     pathex=[],

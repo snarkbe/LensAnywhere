@@ -1,42 +1,31 @@
-import http.server
-import socketserver
-import threading
-import subprocess
-import re
+import http.client
 import secrets
+import ssl
 import urllib.parse
 import webbrowser
-import os
-import sys
-import time
 
-PORT = 8998  # Internal local server port
+LENS_HOST = "lens.google.com"
+LENS_UPLOAD_PATH = "/upload"
+REQUEST_TIMEOUT = 25  # seconds
 
-# Idle time to keep the Cloudflare tunnel open after a capture, to give
-# Google Lens time to fetch the image, before it is torn down automatically.
-TUNNEL_IDLE_TIMEOUT = 45
-# Max time to wait for cloudflared to print a public URL on startup.
-TUNNEL_STARTUP_TIMEOUT = 15
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
-CURRENT_IMAGE = None
-CURRENT_TOKEN = None
-PUBLIC_URL = None
-SERVER_READY = False
+# Anonymous requests to Google from an EU/EEA IP are otherwise served a GDPR
+# consent interstitial instead of the expected redirect. This is the same
+# "consent already given" cookie long used by Google-scraping tools to skip
+# that interstitial for unauthenticated, cookie-less requests.
+CONSENT_COOKIE = "CONSENT=YES+"
 
-_tunnel_process = None
-_tunnel_lock = threading.Lock()
-_shutdown_timer = None
-
-_local_server_started = False
-_local_server_lock = threading.Lock()
-
-# Optional UI hook (e.g. tray notification) so the tunnel lifecycle is
-# visible instead of running fully silently in the background.
+# Optional UI hook (e.g. tray notification) so upload status is visible
+# instead of running silently in the background.
 _status_callback = None
 
 
 def set_status_callback(callback):
-    """Registers callback(message: str) to surface tunnel status to the UI."""
+    """Registers callback(message: str) to surface upload status to the UI."""
     global _status_callback
     _status_callback = callback
 
@@ -50,164 +39,76 @@ def _notify(message):
             pass
 
 
-def get_resource_path(relative_path):
-    """Get absolute path to resource, works for dev and for PyInstaller bundling."""
-    if hasattr(sys, '_MEIPASS'):
-        return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
+def _build_multipart_body(image_bytes):
+    """Builds a multipart/form-data body matching what lens.google.com/upload expects."""
+    boundary = "----LensAnywhereBoundary" + secrets.token_hex(16)
+
+    header = (
+        f'--{boundary}\r\n'
+        'Content-Disposition: form-data; name="image_content"\r\n\r\n\r\n'
+        f'--{boundary}\r\n'
+        'Content-Disposition: form-data; name="encoded_image"; filename="image.png"\r\n'
+        'Content-Type: image/png\r\n\r\n'
+    ).encode("utf-8")
+    footer = f'\r\n--{boundary}--\r\n'.encode("utf-8")
+
+    return boundary, header + image_bytes + footer
 
 
-class ImageHandler(http.server.BaseHTTPRequestHandler):
-    """Serves the latest captured screenshot from RAM behind a random, per-capture token."""
+def _upload_to_lens(image_bytes):
+    """POSTs the image bytes directly to Google Lens (a plain outbound HTTPS
+    request, like any browser upload) and returns the resulting search-results
+    URL taken from the redirect. No public exposure of the image is involved."""
+    boundary, body = _build_multipart_body(image_bytes)
 
-    def do_GET(self):
-        requested_path = self.path.split("?", 1)[0]
-        expected_path = f"/{CURRENT_TOKEN}/image.png" if CURRENT_TOKEN else None
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(len(body)),
+        "User-Agent": USER_AGENT,
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cookie": CONSENT_COOKIE,
+    }
 
-        if CURRENT_IMAGE and expected_path and requested_path == expected_path:
-            self.send_response(200)
-            self.send_header("Content-Type", "image/png")
-            self.send_header("Content-Length", str(len(CURRENT_IMAGE)))
-            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-            self.end_headers()
-            self.wfile.write(CURRENT_IMAGE)
-        else:
-            self.send_error(404, "Not Found")
+    query = urllib.parse.urlencode({"hl": "en", "gl": "us"})
 
-    def log_message(self, format, *args):
-        # Silence local HTTP server logs in console
-        pass
-
-
-def _run_local_server():
-    """Runs a tiny local web server in a background thread, bound to localhost only."""
-    socketserver.TCPServer.allow_reuse_address = True
-    try:
-        with socketserver.TCPServer(("127.0.0.1", PORT), ImageHandler) as httpd:
-            httpd.serve_forever()
-    except Exception as e:
-        print(f"Local server error: {e}")
-
-
-def _ensure_local_server():
-    """Starts the local (loopback-only) server once, lazily on first capture."""
-    global _local_server_started
-    with _local_server_lock:
-        if _local_server_started:
-            return
-        threading.Thread(target=_run_local_server, daemon=True).start()
-        _local_server_started = True
-
-
-def _start_tunnel_blocking():
-    """Launches cloudflared for this capture only and blocks until a public URL is parsed."""
-    global PUBLIC_URL, SERVER_READY, _tunnel_process
-
-    exe_name = "cloudflared.exe" if sys.platform == "win32" else "cloudflared"
-    exe_path = get_resource_path(exe_name)
-
-    if not os.path.exists(exe_path):
-        _notify(f"[ERROR] '{exe_name}' not found next to the application.")
-        return False
-
-    _notify("LensAnywhere: opening a temporary tunnel for this capture...")
-
-    creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-
-    process = subprocess.Popen(
-        [exe_path, "tunnel", "--url", f"http://127.0.0.1:{PORT}"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        creationflags=creation_flags
+    conn = http.client.HTTPSConnection(
+        LENS_HOST, timeout=REQUEST_TIMEOUT, context=ssl.create_default_context()
     )
-    _tunnel_process = process
+    try:
+        conn.request("POST", f"{LENS_UPLOAD_PATH}?{query}", body=body, headers=headers)
+        response = conn.getresponse()
+        response.read()  # drain the body so the connection can close cleanly
 
-    url_regex = re.compile(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com')
-    deadline = time.time() + TUNNEL_STARTUP_TIMEOUT
+        if response.status in (301, 302, 303, 307, 308):
+            location = response.getheader("Location")
+            if location:
+                if location.startswith("/"):
+                    location = f"https://{LENS_HOST}{location}"
+                return location
 
-    while time.time() < deadline:
-        line = process.stdout.readline()
-        if not line:
-            break
-        match = url_regex.search(line)
-        if match:
-            PUBLIC_URL = match.group(0)
-            SERVER_READY = True
-            _notify("LensAnywhere: tunnel active for this capture.")
-            return True
-
-    return SERVER_READY
-
-
-def _stop_tunnel():
-    """Kills the cloudflared process and resets tunnel state, closing the exposure window."""
-    global PUBLIC_URL, SERVER_READY, _tunnel_process, CURRENT_IMAGE, CURRENT_TOKEN
-
-    proc = _tunnel_process
-    _tunnel_process = None
-    PUBLIC_URL = None
-    SERVER_READY = False
-    CURRENT_IMAGE = None
-    CURRENT_TOKEN = None
-
-    if proc and proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-
-    _notify("LensAnywhere: tunnel closed.")
-
-
-def _schedule_tunnel_shutdown(delay=TUNNEL_IDLE_TIMEOUT):
-    global _shutdown_timer
-    if _shutdown_timer:
-        _shutdown_timer.cancel()
-    _shutdown_timer = threading.Timer(delay, _stop_tunnel)
-    _shutdown_timer.daemon = True
-    _shutdown_timer.start()
-
-
-def is_server_ready():
-    """The capture overlay no longer waits on the tunnel: it is opened on demand per capture."""
-    return True
+        _notify(f"[ERROR] Google Lens upload returned unexpected status {response.status}.")
+        return None
+    finally:
+        conn.close()
 
 
 def search_lens(image_bytes: bytes):
-    """Serves the capture locally behind a random token and opens Google Lens via a
-    freshly-started, short-lived Cloudflare tunnel that is torn down shortly after use."""
-    global CURRENT_IMAGE, CURRENT_TOKEN
+    """Uploads the capture directly to Google Lens and opens the resulting
+    search page in the default browser. Nothing is served or exposed
+    publicly: the image travels in a single outbound HTTPS request."""
+    _notify("LensAnywhere: uploading capture to Google Lens...")
 
-    _ensure_local_server()
+    try:
+        result_url = _upload_to_lens(image_bytes)
+    except Exception as e:
+        _notify(f"[ERROR] Could not reach Google Lens: {e}")
+        return
 
-    with _tunnel_lock:
-        if _shutdown_timer:
-            _shutdown_timer.cancel()
+    if not result_url:
+        _notify("[ERROR] Google Lens upload failed. Please try again.")
+        return
 
-        CURRENT_TOKEN = secrets.token_urlsafe(16)
-        CURRENT_IMAGE = image_bytes
-
-        if not SERVER_READY:
-            if not _start_tunnel_blocking():
-                _notify("[ERROR] Tunnel unavailable. Make sure cloudflared is present next to the application.")
-                CURRENT_IMAGE = None
-                CURRENT_TOKEN = None
-                return
-
-        # Random per-capture token instead of a fixed, guessable path.
-        img_url = f"{PUBLIC_URL}/{CURRENT_TOKEN}/image.png"
-        lens_url = "https://lens.google.com/uploadbyurl?url=" + urllib.parse.quote(img_url, safe="")
-
-        _notify("LensAnywhere: opening search in Google Lens...")
-        webbrowser.open(lens_url)
-
-        _schedule_tunnel_shutdown()
+    webbrowser.open(result_url)
 
 
 if __name__ == "__main__":
