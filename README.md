@@ -67,6 +67,42 @@ If you just want to use the app without running Python scripts:
 
 ---
 
+## 🛡️ Security & Antivirus False Positives
+
+LensAnywhere ships a background HTTP tunnel (Cloudflare `cloudflared`) plus a
+silently-launched helper process, a pattern antivirus/SmartScreen heuristics
+often flag. This project takes the following steps to reduce both the real
+exposure and the false-positive rate:
+
+- **Random per-capture URL**: each screenshot is served behind a fresh
+  `secrets.token_urlsafe(16)` token instead of a fixed, guessable
+  `/image.png` path, so nothing can be found by scanning/guessing the tunnel
+  URL while it's briefly up.
+- **On-demand tunnel**: `cloudflared` is no longer started at app launch and
+  kept open for the whole session. It is spun up only when a capture is
+  actually made, and automatically torn down ~45s later, minimizing both the
+  exposure window and the "persistent outbound connection" pattern AVs
+  dislike.
+- **Visible tunnel lifecycle**: opening/closing the tunnel now raises a
+  system tray notification instead of running fully silently in the
+  background.
+- **Build**: release binaries are built one-folder (`--onedir`) with UPX
+  compression disabled (`--noupx`, see `LensAnywhere.spec`) rather than a
+  single UPX-packed `--onefile` executable, which lowers the entropy/packing
+  signature that static AV engines key on.
+
+Two additional steps further reduce SmartScreen/Defender false positives but
+require an account/cost and can't be automated in this repo:
+
+- **Code-signing** the released executable with a code-signing certificate
+  (e.g. an OV cert from Sectigo/SSL.com) — by far the most effective lever
+  against reputation-based warnings.
+- **Submitting** the built binary to
+  [Microsoft Security Intelligence](https://www.microsoft.com/en-us/wdsi/filesubmission)
+  so Defender/SmartScreen can build reputation for it ahead of releases.
+
+---
+
 ## 🔒 Privacy & Legal Disclaimer
 
 > **Important Notice:**
