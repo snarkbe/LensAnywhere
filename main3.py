@@ -834,9 +834,9 @@ class SettingsWin(QWidget):
         separator.setObjectName("Separator")
         general_layout.addWidget(separator)
 
-        # Startup Setting (Default ON)
+        # Startup Setting (Default OFF - opt-in, not silently registered on first launch)
         self.startup_s = ToggleSwitch()
-        self.startup_s.setChecked(True)
+        self.startup_s.setChecked(False)
         startup_row = self._create_setting_row("Launch on Startup",
                                                "Start LensAnywhere silently in the background on boot.", self.startup_s)
         general_layout.addLayout(startup_row)
@@ -969,7 +969,7 @@ class SettingsWin(QWidget):
                 self.clipboard_s.setChecked(data.get("save_to_clipboard", False))
                 self.loc_input.setText(data.get("save_location", ""))
 
-                startup_enabled = data.get("launch_on_startup", True)
+                startup_enabled = data.get("launch_on_startup", False)
                 self.startup_s.setChecked(startup_enabled)
                 StartupManager.set_enabled(startup_enabled)
 
@@ -978,8 +978,8 @@ class SettingsWin(QWidget):
         else:
             self._onboarding_completed = False
             self.clipboard_s.setChecked(False)
-            self.startup_s.setChecked(True)
-            StartupManager.set_enabled(True)
+            self.startup_s.setChecked(False)
+            StartupManager.set_enabled(False)
 
         self._is_loading = False
 

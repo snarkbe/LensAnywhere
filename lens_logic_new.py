@@ -39,6 +39,17 @@ def _notify(message):
             pass
 
 
+def _is_trusted_google_url(url):
+    """Defense-in-depth check before handing a server-returned redirect to the
+    browser: only ever open it if it actually points at a Google host."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and (host == "google.com" or host.endswith(".google.com"))
+
+
 def _build_multipart_body(image_bytes):
     """Builds a multipart/form-data body matching what lens.google.com/upload expects."""
     boundary = "----LensAnywhereBoundary" + secrets.token_hex(16)
@@ -106,6 +117,10 @@ def search_lens(image_bytes: bytes):
 
     if not result_url:
         _notify("[ERROR] Google Lens upload failed. Please try again.")
+        return
+
+    if not _is_trusted_google_url(result_url):
+        _notify("[ERROR] Refused to open an untrusted redirect returned by Google Lens.")
         return
 
     webbrowser.open(result_url)

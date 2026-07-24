@@ -1,0 +1,10 @@
+# Per-user runtime config (regenerated on first launch, not meant to be shipped)
+settings.json
+
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller build output
+build/
+dist/
