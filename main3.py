@@ -18,7 +18,31 @@ from lens_logic_new import search_lens, set_status_callback
 from global_hotkey_function_new import GlobalHotkey
 from startup_manager import StartupManager
 
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+APP_NAME = "LensAnywhere"
+
+
+def get_settings_path():
+    """Returns the per-user settings file path.
+
+    Settings live in the OS's per-user app-data directory rather than next to
+    the executable: an app installed under Program Files (or run from any
+    read-only location) cannot write beside its own binary, which would
+    silently discard every setting change on restart.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, APP_NAME, "settings.json")
+
+
+SETTINGS_FILE = get_settings_path()
+
+# Older versions stored settings next to the script/executable; read that file
+# once if the new location has no settings yet, so existing users keep theirs.
+LEGACY_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
 
 
 def get_resource_path(relative_path):
@@ -943,6 +967,7 @@ class SettingsWin(QWidget):
             "launch_on_startup": self.startup_s.isChecked()
         }
         try:
+            os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
         except Exception as e:
@@ -950,9 +975,18 @@ class SettingsWin(QWidget):
 
     def load_settings(self):
         self._is_loading = True
-        if os.path.exists(SETTINGS_FILE):
+
+        # Prefer the per-user location; fall back to a legacy file sitting next
+        # to the app so upgrading users don't silently lose their settings.
+        source = SETTINGS_FILE
+        migrated = False
+        if not os.path.exists(source) and os.path.exists(LEGACY_SETTINGS_FILE):
+            source = LEGACY_SETTINGS_FILE
+            migrated = True
+
+        if os.path.exists(source):
             try:
-                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                with open(source, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
                 self._onboarding_completed = data.get("onboarding_completed", False)
@@ -975,6 +1009,7 @@ class SettingsWin(QWidget):
 
             except Exception as e:
                 print(f"Error loading settings: {e}")
+                migrated = False
         else:
             self._onboarding_completed = False
             self.clipboard_s.setChecked(False)
@@ -982,6 +1017,11 @@ class SettingsWin(QWidget):
             StartupManager.set_enabled(False)
 
         self._is_loading = False
+
+        # Write the migrated settings to the new location straight away, so the
+        # legacy file is only ever read once.
+        if migrated:
+            self.save_settings()
 
     def _create_setting_row(self, title, description, widget):
         row = QHBoxLayout()
