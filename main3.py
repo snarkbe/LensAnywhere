@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QPushButton, QCheckBox, QComboBox, QSizePolicy, QLineEdit,
     QFileDialog, QSystemTrayIcon, QMenu, QScrollArea, QGridLayout
 )
-from PySide6.QtCore import Qt, QRect, QByteArray, QBuffer, QIODevice, QSize, QPropertyAnimation, QRectF, Property, QUrl, Signal, QTimer
+from PySide6.QtCore import Qt, QRect, QByteArray, QBuffer, QIODevice, QSize, QPropertyAnimation, QRectF, Property, QUrl, Signal
 from PySide6.QtGui import QPainter, QColor, QPen, QIcon, QBrush, QAction, QPixmap, QDesktopServices, QPainterPath
 import sys
 import os
@@ -14,7 +14,7 @@ import threading
 import urllib.request
 
 # Custom modules
-from lens_logic_new import search_lens, is_server_ready
+from lens_logic_new import search_lens, set_status_callback
 from global_hotkey_function_new import GlobalHotkey
 from startup_manager import StartupManager
 
@@ -834,9 +834,9 @@ class SettingsWin(QWidget):
         separator.setObjectName("Separator")
         general_layout.addWidget(separator)
 
-        # Startup Setting (Default ON)
+        # Startup Setting (Default OFF - opt-in, not silently registered on first launch)
         self.startup_s = ToggleSwitch()
-        self.startup_s.setChecked(True)
+        self.startup_s.setChecked(False)
         startup_row = self._create_setting_row("Launch on Startup",
                                                "Start LensAnywhere silently in the background on boot.", self.startup_s)
         general_layout.addLayout(startup_row)
@@ -914,7 +914,7 @@ class SettingsWin(QWidget):
             return
 
         if self.hotkey_manager:
-            self.hotkey_manager.set_enabled(checked and is_server_ready())
+            self.hotkey_manager.set_enabled(checked)
         self.save_settings()
 
     def _on_hotkey_changed(self):
@@ -969,7 +969,7 @@ class SettingsWin(QWidget):
                 self.clipboard_s.setChecked(data.get("save_to_clipboard", False))
                 self.loc_input.setText(data.get("save_location", ""))
 
-                startup_enabled = data.get("launch_on_startup", True)
+                startup_enabled = data.get("launch_on_startup", False)
                 self.startup_s.setChecked(startup_enabled)
                 StartupManager.set_enabled(startup_enabled)
 
@@ -978,8 +978,8 @@ class SettingsWin(QWidget):
         else:
             self._onboarding_completed = False
             self.clipboard_s.setChecked(False)
-            self.startup_s.setChecked(True)
-            StartupManager.set_enabled(True)
+            self.startup_s.setChecked(False)
+            StartupManager.set_enabled(False)
 
         self._is_loading = False
 
@@ -1040,16 +1040,7 @@ class Overlay(QWidget):
         self.tray_icon = tray_icon
 
     def trigger_capture(self):
-        """Triggers overlay only if tunnel is active."""
-        if not is_server_ready():
-            if self.tray_icon:
-                self.tray_icon.showMessage(
-                    "LensAnywhere",
-                    "Cloudflare Tunnel initializing... Please wait a few seconds.",
-                    QSystemTrayIcon.Warning,
-                    3000
-                )
-            return
+        """Opens the capture overlay."""
         self.showFullScreen()
 
     def show_settings(self):
@@ -1183,6 +1174,25 @@ def create_tray_icon_pixmap():
     return pm
 
 
+class LensStatusNotifier(QWidget):
+    """Marshals Google Lens upload status updates from the background capture
+    thread onto the Qt main thread so they can be surfaced as a visible tray
+    notification instead of running silently in the background."""
+
+    status_changed = Signal(str)
+
+    def __init__(self, tray_icon, parent=None):
+        super().__init__(parent)
+        self.tray_icon = tray_icon
+        self.status_changed.connect(self._show)
+
+    def _show(self, message):
+        self.tray_icon.showMessage("LensAnywhere", message, QSystemTrayIcon.Information, 3000)
+
+    def notify(self, message):
+        self.status_changed.emit(message)
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -1197,9 +1207,7 @@ if __name__ == "__main__":
     )
 
     overlay.settings.set_hotkey_manager(hotkey_manager)
-
-    # Disable hotkey until Cloudflare tunnel is confirmed ready
-    hotkey_manager.set_enabled(False)
+    hotkey_manager.set_enabled(overlay.settings.hotkey_s.isChecked())
 
     logo_file = get_resource_path("logo.png")
     if os.path.exists(logo_file):
@@ -1207,8 +1215,14 @@ if __name__ == "__main__":
     else:
         tray_icon = QSystemTrayIcon(QIcon(create_tray_icon_pixmap()), app)
 
-    tray_icon.setToolTip("LensAnywhere (Connecting Tunnel...)")
+    tray_icon.setToolTip("LensAnywhere (Ready)")
     overlay.set_tray_icon(tray_icon)
+
+    # Captures are uploaded directly to Google Lens (see lens_logic_new.py);
+    # wire that status to a visible tray notification rather than letting it
+    # run silently in the background.
+    lens_notifier = LensStatusNotifier(tray_icon)
+    set_status_callback(lens_notifier.notify)
 
     tray_menu = QMenu()
 
@@ -1234,17 +1248,6 @@ if __name__ == "__main__":
             overlay.trigger_capture()
 
     tray_icon.activated.connect(on_tray_activated)
-
-    # Poller timer to activate hotkey once Cloudflare tunnel is ready
-    def check_tunnel_status():
-        if is_server_ready():
-            hotkey_manager.set_enabled(overlay.settings.hotkey_s.isChecked())
-            tray_icon.setToolTip("LensAnywhere (Ready)")
-            tunnel_timer.stop()
-
-    tunnel_timer = QTimer()
-    tunnel_timer.timeout.connect(check_tunnel_status)
-    tunnel_timer.start(500)
 
     print("LensAnywhere started successfully")
     print("Application running in System Tray ---")
